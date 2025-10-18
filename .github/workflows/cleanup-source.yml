@@ -1,0 +1,87 @@
+# Đặt file này trong: remox-release/.github/workflows/cleanup-source.yml
+
+name: Cleanup Source Code
+
+on:
+  release:
+    types: [published, created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to clean (e.g., v1.0.17)'
+        required: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: 🧹 Auto cleanup source code
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Xác định tag
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.tag }}" ]; then
+              TAG="${{ github.event.inputs.tag }}"
+            else
+              # Lấy release mới nhất
+              TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
+            fi
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          
+          echo "🏷️ Cleaning release: $TAG"
+          
+          # Function xóa với retry
+          cleanup() {
+            echo "🔍 Looking for source code files..."
+            
+            # Liệt kê assets
+            gh release view "$TAG" \
+              --repo ${{ github.repository }} \
+              --json assets \
+              --jq '.assets[] | select(.name | startswith("Source code")) | .name' | while read -r asset; do
+              
+              if [ ! -z "$asset" ]; then
+                echo "  🗑️ Deleting: $asset"
+                gh release delete-asset "$TAG" "$asset" \
+                  --repo ${{ github.repository }} \
+                  --yes 2>/dev/null || true
+              fi
+            done
+          }
+          
+          # Xóa nhiều lần
+          for i in {1..5}; do
+            echo ""
+            echo "Attempt #$i"
+            cleanup
+            
+            # Kiểm tra còn source không
+            REMAINING=$(gh release view "$TAG" \
+              --repo ${{ github.repository }} \
+              --json assets \
+              --jq '[.assets[] | select(.name | startswith("Source code"))] | length')
+            
+            if [ "$REMAINING" -eq "0" ]; then
+              echo "✅ All source code removed!"
+              break
+            fi
+            
+            if [ $i -lt 5 ]; then
+              echo "⏳ Waiting 10 seconds..."
+              sleep 10
+            fi
+          done
+          
+          # Hiển thị kết quả final
+          echo ""
+          echo "📦 Final assets:"
+          gh release view "$TAG" \
+            --repo ${{ github.repository }} \
+            --json assets \
+            --jq '.assets[] | "  ✅ \(.name) (\(.size / 1024 / 1024 | floor)MB)"'
