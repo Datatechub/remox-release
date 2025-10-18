@@ -1,46 +1,63 @@
-# .github/workflows/cleanup-source-code.yml
-# Workflow này nằm trong repo public (remox-release)
-# Mục đích: Tự động xóa file source code ngay khi có release mới được publish.
+# Trong repo public: Datatechub/remox-release/.github/workflows/cleanup-source-code.yml
 
-name: Auto Clean Source Code Archives
+name: Scheduled and On-Demand Source Code Cleanup
 
-# Kích hoạt workflow này khi một release được "published"
 on:
-  release:
-    types: [published]
+  # Cho phép gọi workflow này từ một workflow khác
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'The tag of the release to clean (e.g., v1.0.33)'
+        required: true
+  
+  # Thêm một lịch chạy dự phòng (ví dụ: mỗi 6 tiếng) để dọn dẹp nếu có gì đó bị sót
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
-  cleanup-source-assets:
+  cleanup-assets:
     runs-on: ubuntu-latest
-
-    # Cấp quyền cho GITHUB_TOKEN để có thể chỉnh sửa release (xóa asset)
     permissions:
-      contents: write
+      contents: write # Cấp quyền để xóa asset
 
     steps:
-      - name: 🏷️ Get Release Tag Name
-        id: get_tag
-        # Lấy tên tag từ sự kiện đã trigger workflow (ví dụ: v1.0.32)
-        run: echo "TAG_NAME=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+      # SỬA LỖI: Thêm bước checkout để tạo môi trường Git hợp lệ
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: 🗑️ Delete Source Code Archives
+      - name: 🏷️ Get Target Tag
+        id: get_tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_ENV
+          else
+            # Lấy tag của release mới nhất khi chạy theo lịch
+            echo "TAG_NAME=$(gh release list --limit 1 --json tagName -q '.[0].tagName')" >> $GITHUB_ENV
+          fi
+
+      - name: 🗑️ Wait and Delete Source Code Archives
         env:
-          # Sử dụng GITHUB_TOKEN mặc định của workflow, đã được cấp quyền ở trên
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🧹 Cleaning up source code for release: ${{ env.TAG_NAME }}"
-
-          # Lệnh xóa file zip. Dùng "--yes" để tự động xác nhận.
-          # Dùng "|| true" để workflow không bị lỗi nếu file không tồn tại.
-          gh release delete-asset "${{ env.TAG_NAME }}" "Source code (zip)" --yes || echo "ℹ️ 'Source code (zip)' not found or already deleted."
-
-          # Lệnh xóa file tar.gz
-          gh release delete-asset "${{ env.TAG_NAME }}" "Source code (tar.gz)" --yes || echo "ℹ️ 'Source code (tar.gz)' not found or already deleted."
+          # Nếu không có tag thì thoát
+          if [ -z "${{ env.TAG_NAME }}" ]; then
+            echo "No tag specified or found. Exiting."
+            exit 0
+          fi
+          
+          echo "🧹 Targeting release: ${{ env.TAG_NAME }}"
+          
+          # Chờ đợi kiên nhẫn để đảm bảo GitHub đã tạo xong assets
+          echo "⏳ Waiting for 30 seconds to allow assets to be generated..."
+          sleep 30
+          
+          gh release delete-asset "${{ env.TAG_NAME }}" "Source code (zip)" --yes || echo "ℹ️ 'Source code (zip)' not found."
+          gh release delete-asset "${{ env.TAG_NAME }}" "Source code (tar.gz)" --yes || echo "ℹ️ 'Source code (tar.gz)' not found."
 
       - name: ✅ Verify Final Assets
+        if: env.TAG_NAME != '' # Chỉ chạy nếu có tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "✅ Cleanup complete. Verifying final assets for ${{ env.TAG_NAME }}:"
-          # In ra danh sách các file còn lại để xác nhận trong log
+          echo "✅ Cleanup attempt complete. Final assets for ${{ env.TAG_A_NAME }}:"
           gh release view "${{ env.TAG_NAME }}" --json assets --jq '.assets[].name'
